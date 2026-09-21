@@ -1,0 +1,95 @@
+default:
+  retry:
+    max: 2
+    when:
+    - unknown_failure
+    - api_failure
+    - runner_system_failure
+    - job_execution_timeout
+    - unmet_prerequisites
+    - scheduler_failure
+    - data_integrity_failure
+
+.rollback:
+  after_script:
+    - if kubectl rollout status -n $ns $depl --timeout=10s ; then
+    -   echo 'Update completed successfully'
+    - else 
+    -   kubectl rollout undo -n $ns $depl
+    -   kubectl rollout status -n $ns $depl --timeout=4m
+    - fi
+
+.deploy:
+  stage: deploy
+  extends: [".rollback"]
+  timeout: 15 minutes
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "master"
+      when: on_success
+  image: $HARBOR_ADDRESS_EXT/library/bitnami/kubectl:1.30.3
+  variables:
+    depl: deployments/$REPOSITORY
+  script:
+    - echo $DEPLOY_VERSION
+    - kubectl set image -n $ns $depl main-app=$DEPLOY_VERSION
+    - kubectl rollout status -n $ns $depl --timeout=5m
+  tags: ["docker"]
+
+.deploy-daemonset:
+  extends: [".deploy"]
+  variables:
+    daem: daemonset/$REPOSITORY
+  script:
+    - cat deploy_version
+    - kubectl set image -n $ns $daem $cont=$(cat deploy_version)
+    - kubectl rollout status -n $ns $daem --timeout=5m
+
+.docker-build-with-cache:
+  script:
+    - if time docker pull -q $IMAGE_DEV; then
+    -   time docker build --cache-from=$IMAGE_DEV -t $IMAGE_LATEST -t $IMAGE_VERSION -t $IMAGE_DEV -t $IMAGE_HELM .
+    - elif time docker pull -q $IMAGE_LATEST; then
+    -   time docker build --cache-from=$IMAGE_LATEST -t $IMAGE_LATEST -t $IMAGE_VERSION -t $IMAGE_DEV -t $IMAGE_HELM .
+    - else
+    -   time docker build -t $IMAGE_LATEST -t $IMAGE_VERSION -t $IMAGE_DEV -t $IMAGE_HELM .
+    - fi
+
+.docker-build-with-cache-web:
+  script:
+    - if time docker pull -q $IMAGE_DEV; then
+    -   time docker build --build-arg INDIVIDUAL=$TYPE --cache-from=$IMAGE_DEV -t $IMAGE_LATEST -t $IMAGE_VERSION -t $IMAGE_DEV .
+    - elif time docker pull -q $IMAGE_LATEST; then
+    -   time docker build --build-arg INDIVIDUAL=$TYPE --cache-from=$IMAGE_LATEST -t $IMAGE_LATEST -t $IMAGE_VERSION -t $IMAGE_DEV .
+    - else
+    -   time docker build --build-arg INDIVIDUAL=$TYPE -t $IMAGE_LATEST -t $IMAGE_VERSION -t $IMAGE_DEV .
+    - fi
+
+.docker-build-with-cache-socket:
+  script:
+    - if time docker pull -q $IMAGE_DEV; then
+    -   time docker build --cache-from=$IMAGE_DEV -t $IMAGE_LATEST -t $IMAGE_VERSION -t $IMAGE_DEV ./socket
+    - elif time docker pull -q $IMAGE_LATEST; then
+    -   time docker build --cache-from=$IMAGE_LATEST -t $IMAGE_LATEST -t $IMAGE_VERSION -t $IMAGE_DEV ./socket
+    - else
+    -   time docker build -t $IMAGE_LATEST -t $IMAGE_VERSION -t $IMAGE_DEV ./socket
+    - fi
+
+.docker-build-without-cache:
+  script:
+    - time docker build -t $IMAGE_LATEST -t $IMAGE_VERSION -t $IMAGE_DEV .
+
+.helm-push:
+  script:
+    - time docker push $IMAGE_HELM
+    - echo $CHART_PASSWORD | helm repo add --username $CHART_USER --password-stdin $PROJECT $CHART_ADDRESS
+    - helm cm-push --version $CI_COMMIT_TAG --app-version $CI_COMMIT_TAG ./helm $PROJECT
+
+.helm-static:
+  stage: static
+  timeout: 10 minutes
+  allow_failure: true
+  needs: []
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  image: harbor.home.paypoint.pro/service/helm-unit:latest
+  tags: ["docker"]

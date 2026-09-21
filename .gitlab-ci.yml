@@ -1,0 +1,73 @@
+stages:
+  - build
+  - static
+  - deploy
+
+variables:
+  PROJECT: web
+  REPOSITORY: rates-backend
+
+include: 
+  - templates.yml
+
+build:
+  stage: build
+  timeout: 20 minutes
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "master"
+      when: on_success
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: on_success
+    - if: $CI_COMMIT_TAG
+  image: $HARBOR_ADDRESS_EXT/service/docker:20.10.17-k8s
+  variables:
+    KUBERNETES_SERVICE_MEMORY_LIMIT:   3G
+    KUBERNETES_SERVICE_MEMORY_REQUEST: 3G
+  services:
+    - name: $HARBOR_ADDRESS_EXT/library/docker:20.10.17-dind
+      command: ["--registry-mirror", "http://registry-mirror-harbor:5000", "--insecure-registry=registry-mirror-harbor:5000", "--insecure-registry=harbor.harbor:80"]
+  before_script:
+    - for i in $(seq 1 30);do docker info &> /dev/null && break; sleep 1s; done
+    - echo $HARBOR_PASSWORD | docker login --username $HARBOR_LOGIN --password-stdin $HARBOR_ADDRESS
+  script:
+    - echo "$(version.sh)" > ver
+    - IMAGE_VERSION=$HARBOR_ADDRESS/$PROJECT/$REPOSITORY:$(cat ver)
+    - IMAGE_LATEST=$HARBOR_ADDRESS/$PROJECT/$REPOSITORY:latest
+    - IMAGE_DEV=$HARBOR_ADDRESS/$PROJECT/$REPOSITORY:$CI_COMMIT_REF_NAME
+    - IMAGE_HELM=$HARBOR_ADDRESS/$PROJECT/$REPOSITORY:release-v.$CI_COMMIT_TAG
+    - !reference [.docker-build-with-cache, script]
+    - if [ ! -z "$CI_COMMIT_TAG" ]; then
+    -   !reference [.helm-push, script]
+    - elif [[ "$CI_COMMIT_BRANCH" == "master" ]]; then
+    -   time docker push $IMAGE_LATEST
+    -   time docker push $IMAGE_VERSION
+    -   echo "DEPLOY_VERSION = $HARBOR_ADDRESS_EXT/$PROJECT/$REPOSITORY:$(cat ver)" >> build.env
+    - else
+    -   time docker push $IMAGE_DEV
+    - fi
+  artifacts:
+    reports:
+      dotenv: build.env
+    expire_in: 2 hour
+  tags: ["build"]
+
+kube-score:
+  extends: [".helm-static"]
+  script:
+    - helm template ./helm/ | kube-score score --ignore-test pod-networkpolicy --ignore-test container-security-context-readonlyrootfilesystem --ignore-test container-security-context-user-group-id -
+
+kubeconform:
+  extends: [".helm-static"]
+  script:
+    - helm template ./helm/ | kubeconform -debug -output json -summary -verbose
+
+yamllint:
+  extends: [".helm-static"]
+  script:
+    - helm template ./helm/ | awk '{print NR, $0}'
+    - helm template ./helm/ | yamllint -
+
+service-depl:
+  extends: [".deploy"]
+  variables:
+    ns: service

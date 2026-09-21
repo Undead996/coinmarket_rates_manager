@@ -1,0 +1,45 @@
+replicaCount: 1
+
+imagePullSecrets: 
+  - name: harbor-credentials
+
+resources: 
+  limits: 
+    cpu: "1"
+    memory: "512Mi"
+    ephemeral: "1Gi"
+  requests: 
+    cpu: "0.1"
+    memory: "256Mi"
+    ephemeral: "256Mi"
+
+image:
+  repository: harbor.home.paypoint.pro/web/rates-backend
+  pullPolicy: IfNotPresent
+
+affinity: |-
+  nodeAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 10
+        preference:
+          matchExpressions:
+            - key: runner
+              operator: NotIn
+              values:
+                - disk
+ingress:
+  host: "rates-backend"
+  tls:
+    secret_name: ""
+
+secrets:
+  secret_key: "your-secret-key-here-change-this-in-production"
+  algorithm: "HS256"
+  access_token_expire_minutes: "30"
+  coinmarketcap_host: "https://pro-api.coinmarketcap.com"
+
+  mysql_host: ""
+  mysql_port: ""
+  mysql_user: ""
+  mysql_pass: ""
+  mysql_name: ""

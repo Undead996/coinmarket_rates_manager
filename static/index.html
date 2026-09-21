@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FastAPI CRUD Backend</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>FastAPI CRUD Backend</h1>
+        <p>Welcome to the FastAPI CRUD Backend with Authentication</p>
+        
+        <div class="links">
+            <a href="/docs" class="btn">API Documentation (Swagger)</a>
+            <a href="/redoc" class="btn">API Documentation (ReDoc)</a>
+        </div>
+        
+        <div class="info">
+            <h2>Available Endpoints:</h2>
+            <ul>
+                <li><strong>POST /register</strong> - Register a new user</li>
+                <li><strong>POST /token</strong> - Login and get JWT token</li>
+                <li><strong>GET /users/me</strong> - Get current user info</li>
+                <li><strong>GET /items</strong> - Get all items</li>
+                <li><strong>POST /items</strong> - Create new item</li>
+                <li><strong>PUT /items/{id}</strong> - Update item</li>
+                <li><strong>DELETE /items/{id}</strong> - Delete item</li>
+            </ul>
+        </div>
+    </div>
+    
+    <script src="/static/script.js"></script>
+</body>
+</html>
