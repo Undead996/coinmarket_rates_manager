@@ -13,7 +13,12 @@ from controllers.coin_market_cup_controller import get_cryptocurrency_retry_if_e
 from src.calculate.rate_calc import validate_currency_and_get_rate
 from src.middleware.ip_access_control import ip_access_required
 
+import logging
+
 router = APIRouter()
+
+# ── Локальный логгер для роутера ──
+logger = logging.getLogger("coinmarket")
 
 # Authentication endpoints
 @router.post("/register", response_model=UserResponse, tags=["Authentication"])
@@ -22,7 +27,9 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
     if db_user:
         raise HTTPException(status_code=400, detail="Username already registered")
     
-    return crud.create_user(db=db, user=user)
+    created_user = crud.create_user(db=db, user=user)
+    logger.info("Зарегистрирован новый пользователь: %s", created_user.username)
+    return created_user
 
 @router.post("/token", response_model=Token, tags=["Authentication"])
 def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
