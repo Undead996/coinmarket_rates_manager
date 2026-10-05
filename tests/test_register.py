@@ -17,8 +17,10 @@ test_register.py — тесты для POST /register.
 """
 
 import pytest
+import requests
 from fastapi.testclient import TestClient
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import create_engine
 from unittest.mock import MagicMock, patch
 from datetime import datetime
 
@@ -69,6 +71,45 @@ def client(mock_db):
         yield c
     # clean-up: убираем переопределение после теста
     app.dependency_overrides.pop(get_db, None)
+
+
+# ── Фикстура module-scope: прямое подключение к тестовой БД ──────
+
+
+@pytest.fixture(scope="module")
+def db_session():
+    """
+    Фикстура с scope='module', которая создаёт ИЗОЛИРОВАННУЮ
+    SQLite-базу в памяти и возвращает сессию для прямых запросов.
+
+    scope='module' — фикстура создаётся ОДИН раз для ВСЕХ тестов
+    в файле (модуле). Тесты внутри модуля разделяют одну сессию.
+
+    Ключевые моменты:
+      1. create_engine("sqlite:///:memory:") — лёгкая БД в ОЗУ.
+      2. Base.metadata.create_all(bind=engine) — создаём схему
+         один раз при первом вызове фикстуры.
+      3. sessionmaker(bind=engine) — фабрика сессий, привязанная
+         к нашему engine.
+      4. Тест получает готовую сессию и может делать напрямую
+         session.add(), session.query(), session.commit() и т.д.
+      5. После всех тестов модуля закрываем engine — ресурсы
+         освобождены.
+    """
+    from src.db.database import Base
+
+    engine = create_engine(
+        "sqlite:///:memory:", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(bind=engine)
+
+    TestingSession = sessionmaker(bind=engine)
+    session = TestingSession()
+
+    yield session
+
+    session.close()
+    engine.dispose()
 
 
 # ── Набор тестов ──────────────────────────────────────────────────
@@ -190,3 +231,174 @@ class TestRegister:
 
         assert resp.status_code == 200
         assert resp.json()["username"] == ""
+
+
+# ══════════════════════════════════════════════════════════════════
+# Примеры для учебных целей: параметризированная фикстура + тест
+# ══════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture(params=[
+    {"username": "alice",   "expected_id": 42},
+    {"username": "bob",     "expected_id": 99},
+    {"username": "carol",   "expected_id": 7},
+])
+def parametrized_user_fixture(request):
+    """
+    Параметризированная фикстура.
+
+    Ключевые моменты:
+      1. params= — список значений. Для каждого элемента pytest
+         запустит зависящие тесты отдельно.
+      2. request.param — текущий элемент из params (внутри функции).
+      3. Фикстура сама настраивает моки, чтобы тесту не пришлось
+         повторять boilerplate с patch-контекстами.
+    """
+    data = request.param
+    with patch.object(crud, "get_user_by_username", return_value=None), \
+         patch.object(crud, "create_user") as mock_create:
+
+        mock_user = MagicMock()
+        mock_user.id = data["expected_id"]
+        mock_user.username = data["username"]
+        mock_user.is_active = True
+        mock_user.created_at = datetime(2025, 1, 1)
+        mock_create.return_value = mock_user
+
+        # yield — тест получит dict с данными; код после yield
+        # выполнится после завершения теста (clean-up).
+        yield {
+            "username": data["username"],
+            "expected_id": data["expected_id"],
+        }
+
+
+@pytest.mark.parametrize("role,http_method", [
+    ("guest",   "POST"),
+    ("admin",   "POST"),
+    ("service", "POST"),
+])
+def test_parametrized_register_with_fixture(client,
+                                            parametrized_user_fixture,
+                                            role, http_method):
+    """
+    Пример теста, в котором ОДНОВРЕМЕННО используются:
+
+      • параметризированная фикстура parametrized_user_fixture
+        (пробегает по трём наборам данных — alice, bob, carol)
+
+      • параметризация через @pytest.mark.parametrize
+        (пробегает по трём комбинациям role × http_method)
+
+    Итоговое число запусков = 3 (параметры фикстуры) × 3 (parametrize) = 9.
+
+    В реальном тесте проверяли бы, что role влияет на поведение
+    эндпоинта. Здесь — только демонстрация синтаксиса.
+    """
+    data = parametrized_user_fixture
+    resp = client.post(
+        f"/register?role={role}",
+        json={"username": data["username"], "password": "pwd"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["username"] == data["username"]
+    assert resp.json()["id"] == data["expected_id"]
+
+
+# ══════════════════════════════════════════════════════════════════
+# Пример: тест с реальным HTTP-вызовом внешнего API (requests)
+# ══════════════════════════════════════════════════════════════════
+
+
+HTTPBIN_URL = "https://httpbin.org/post"
+
+
+@pytest.mark.parametrize("payload,expected_keys", [
+    ({"name": "Alice",   "age": 30},  {"name", "age"}),
+    ({"name": "Bob",     "age": 25},  {"name", "age"}),
+    ({"query": "pytest", "page": 1},  {"query", "page"}),
+])
+def test_external_post_request(payload, expected_keys):
+    """
+    Тест, который отправляет POST-запрос на ВНЕШНИЙ HTTP-сервис
+    (httpbin.org/post) с передачей параметров в теле запроса.
+
+    httpbin.org/post — echo-сервис: он возвращает JSON, в котором
+    поле 'json' содержит то, что мы отправили.
+
+    Ключевые моменты:
+      1. requests.post(url, json=...) — стандартный HTTP-запрос.
+      2. @pytest.mark.parametrize — три разных payload, каждый
+         со своим набором ожидаемых ключей.
+      3. Тест зависит от сети — при недоступности httpbin.org
+         он упадёт. Для учебного примера это нормально.
+      4. В реальном проекте внешние HTTP-вызовы мокают через
+         responses, httpretty или monkeypatch.
+    """
+    resp = requests.post(HTTPBIN_URL, json=payload, timeout=10)
+
+    assert resp.status_code == 200, \
+        "httpbin.org должен вернуть 200"
+
+    data = resp.json()
+    echo = data.get("json", {})
+
+    # Проверяем, что в эхо-ответе присутствуют все отправленные ключи
+    for key in expected_keys:
+        assert key in echo, f"Ключ '{key}' отсутствует в ответе сервера"
+
+    # Проверяем, что Content-Type в запросе — application/json
+    assert data.get("headers", {}).get("Content-Type") \
+        == "application/json"
+
+
+# ══════════════════════════════════════════════════════════════════
+# Пример: тест, использующий db_session (прямая работа с БД)
+# ══════════════════════════════════════════════════════════════════
+
+
+def test_direct_db_insert_and_query(db_session):
+    """
+    Тест, который использует фикстуру db_session с scope='module'
+    для прямой вставки и выборки из БД без моков.
+
+    Фикстура db_session:
+      • scope='module' — создаётся один раз на весь файл.
+      • Использует SQLite :memory: и создаёт все таблицы
+        через Base.metadata.create_all.
+      • Тесты внутри одного модуля разделяют одну сессию
+        (но для учебных целей каждый тест может начинать
+        с чистого состояния, используя rollback или
+        отдельную транзакцию).
+
+    Демонстрирует:
+      • session.add() — добавить запись.
+      • session.commit() — зафиксировать.
+      • session.query(...).filter(...).first() — прочитать.
+      • Прямые манипуляции с моделями SQLAlchemy.
+    """
+    from src.models.models import User
+    from src.auth.auth import get_password_hash
+
+    hashed_pw = get_password_hash("secret123")
+
+    # Создаём пользователя напрямую через ORM
+    new_user = User(
+        username="direct_test_user",
+        hashed_password=hashed_pw,
+        is_active=True,
+    )
+    db_session.add(new_user)
+    db_session.commit()
+
+    # Читаем пользователя обратно
+    fetched = (
+        db_session.query(User)
+        .filter(User.username == "direct_test_user")
+        .first()
+    )
+
+    assert fetched is not None, "Пользователь должен быть найден"
+    assert fetched.username == "direct_test_user"
+    assert fetched.is_active is True
+    assert fetched.id is not None, "ID должен быть назначен БД"
